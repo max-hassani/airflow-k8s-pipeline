@@ -1,0 +1,32 @@
+inference-pipeline {{ .Chart.Version }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+  Airflow {{ .Values.airflow.airflowVersion }} · KubernetesExecutor
+  MinIO   standalone, {{ len .Values.minio.buckets }} buckets
+
+Wait for everything to settle:
+
+  kubectl -n {{ .Release.Namespace }} get pods -w
+
+Open the UIs (both Services are ClusterIP, so nothing is exposed until you ask):
+
+  scripts/30-port-forward.sh
+
+  Airflow UI     http://localhost:8080      admin / admin
+  MinIO console  http://localhost:9001      {{ .Values.inference.identities.root.accessKey }} / {{ .Values.inference.identities.root.secretKey }}
+
+Verify the infrastructure end to end -- pod launching, MinIO connectivity, and
+that the worker identity is denied the restricted bucket:
+
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ .Release.Name }}-scheduler -c scheduler -- \
+    airflow dags trigger 00_smoke_test
+
+Retrieve a specific worker pod's logs:
+
+  kubectl -n {{ .Release.Namespace }} logs -l dag_id=00_smoke_test --all-containers
+
+{{- if .Values.inference.networkPolicy.enabled }}
+
+NOTE: a NetworkPolicy restricting ingress to MinIO is installed, but minikube's
+default CNI does not enforce NetworkPolicy. Per-identity bucket scoping is
+enforced by MinIO IAM regardless.
+{{- end }}
