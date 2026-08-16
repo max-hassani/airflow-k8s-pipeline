@@ -1,0 +1,9 @@
+dependencies:
+- name: airflow
+  repository: https://airflow.apache.org
+  version: 1.22.0
+- name: minio
+  repository: https://charts.min.io/
+  version: 5.4.0
+digest: sha256:8d851efb7b5b671ea9a899ab61a3a4a8b76aa71008580ad85109a628cff081dd
+generated: "2026-08-16T14:59:55.35578428+02:00"
