@@ -119,20 +119,26 @@ def stage_preprocess(args, s3, spec: dict) -> None:
     log("preprocess", f"reading job config s3://{cfg_bucket}/{spec['config_key']}")
     config = yaml.safe_load(get_object(s3, cfg_bucket, spec["config_key"]))
 
-    # The config is the contract between whoever submits a job and this worker,
-    # so validate it here rather than failing three stages later with a
-    # KeyError that points at the wrong place.
-    missing = [k for k in ("job_id", "batch_size", "model_name", "input_csv") if k not in config]
+    # The config carries only the model-side settings. Routing -- which CSV,
+    # which output bucket -- comes from the job spec, so neither file repeats
+    # a field the other owns. Validated here rather than failing three stages
+    # later with a KeyError that points at the wrong place.
+    missing = [k for k in ("batch_size", "model_name") if k not in config]
     if missing:
-        raise SystemExit(f"job config is missing required keys: {', '.join(missing)}")
+        raise SystemExit(
+            f"job config s3://{cfg_bucket}/{spec['config_key']} is missing: {', '.join(missing)}"
+        )
 
-    log("preprocess", f"job_id={config['job_id']} model={config['model_name']} batch_size={config['batch_size']}")
+    log(
+        "preprocess",
+        f"job_id={spec['job_id']} model={config['model_name']} batch_size={config['batch_size']}",
+    )
 
-    log("preprocess", f"reading input s3://{in_bucket}/{config['input_csv']}")
-    raw = get_object(s3, in_bucket, config["input_csv"]).decode("utf-8")
+    log("preprocess", f"reading input s3://{in_bucket}/{spec['input_csv']}")
+    raw = get_object(s3, in_bucket, spec["input_csv"]).decode("utf-8")
     rows = list(csv.DictReader(io.StringIO(raw)))
     if not rows:
-        raise SystemExit(f"input CSV s3://{in_bucket}/{config['input_csv']} has no data rows")
+        raise SystemExit(f"input CSV s3://{in_bucket}/{spec['input_csv']} has no data rows")
 
     d = work_dir(args)
     (d / "records.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
@@ -140,12 +146,12 @@ def stage_preprocess(args, s3, spec: dict) -> None:
     # The manifest is what the next stage reads. Carrying n_rows forward means
     # `infer` never has to re-read or re-parse the CSV.
     manifest = {
-        "job_id": config["job_id"],
+        "job_id": spec["job_id"],
         "model_name": config["model_name"],
         "batch_size": int(config["batch_size"]),
         "n_rows": len(rows),
         "columns": list(rows[0].keys()),
-        "source": f"s3://{in_bucket}/{config['input_csv']}",
+        "source": f"s3://{in_bucket}/{spec['input_csv']}",
         "target_bucket": spec["target_bucket"],
     }
     (d / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -254,13 +260,14 @@ def main() -> int:
     except json.JSONDecodeError as exc:
         raise SystemExit(f"--spec-json is not valid JSON: {exc}")
 
-    for key in ("config_key", "target_bucket"):
+    for key in ("job_id", "config_key", "input_csv", "target_bucket"):
         if key not in spec:
             raise SystemExit(f"job spec is missing '{key}': {spec}")
 
-    # job_id names the scratch directory, so it has to be known before the
-    # config is read. Derived from the config key when the spec omits it.
-    args.job_id = spec.get("job_id") or Path(spec["config_key"]).stem
+    # job_id names the scratch directory, so every stage of a job resolves to
+    # the same place. The DAG derives it from the input filename, which keeps a
+    # published artifact traceable back to the object that produced it.
+    args.job_id = spec["job_id"]
 
     # run_id contains characters (colons, plus signs) that are legal in a path
     # but awkward everywhere else; normalise once, here.
