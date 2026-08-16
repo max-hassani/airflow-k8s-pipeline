@@ -1,0 +1,23 @@
+# Vendored Helm dependencies. Chart.lock pins the exact versions; restore the
+# archives with `helm dependency build k8s/inference-pipeline` (scripts/20-deploy.sh
+# does this for you).
+k8s/inference-pipeline/charts/*.tgz
+
+# Local credential overrides. The chart ships no default passwords; copy
+# values.local.example.yaml to values.local.yaml and fill it in.
+k8s/inference-pipeline/values.local.yaml
+
+# Local agent/session state
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
