@@ -1,0 +1,43 @@
+{{/*
+RBAC notes
+----------
+The Airflow subchart creates the ServiceAccounts and the pod-launching Role for
+its own components (`airflow.rbac.create=true` + `allowPodLaunching=true`).
+Because `airflow.multiNamespaceMode=false`, that is a namespaced Role/RoleBinding
+rather than a ClusterRole: the scheduler can only create pods inside this
+release's namespace. We deliberately do not re-declare it here -- a duplicate
+would drift from the subchart on upgrade.
+
+What this file adds is the piece the subchart does not provide: the identity the
+actual *job* pods run as.
+*/}}
+{{- if .Values.inference.workerServiceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.inference.workerServiceAccount.name }}
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+# KubernetesPodOperator pods run mocked inference and reach MinIO over S3. They
+# have no reason to call the Kubernetes API, so refusing the token removes an
+# entire class of lateral movement from a container running user-supplied code.
+automountServiceAccountToken: false
+---
+{{- end }}
+# Read-only visibility into worker pods, for the debugging workflow in the
+# README (`kubectl logs`, `kubectl describe`). Bound to a human or CI identity
+# rather than to any workload, so nothing in the cluster gains it implicitly.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: inference-pipeline-observer
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
