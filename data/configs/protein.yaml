@@ -1,0 +1,8 @@
+# Model config, referenced by a job spec's `config_key`.
+#
+# Holds only the model-side settings. Routing (which inputs, which output
+# bucket) lives in the job spec, so no field is defined in two places.
+model_name: protein-embedder-v1
+# Rows per forward pass. The mocked worker honours this so the batching is
+# visible in the task logs exactly as a real batched inference would be.
+batch_size: 4

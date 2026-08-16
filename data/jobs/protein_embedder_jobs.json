@@ -1,0 +1,3 @@
+[
+  {"config_key": "protein.yaml", "input_prefix": "proteins/", "target_bucket": "inference-outputs"}
+]

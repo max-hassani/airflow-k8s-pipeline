@@ -1,0 +1,2 @@
+model_name: molecule-embedder-v2
+batch_size: 3

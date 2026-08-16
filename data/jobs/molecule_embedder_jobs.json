@@ -1,0 +1,3 @@
+[
+  {"config_key": "molecule.yaml", "input_prefix": "molecules/", "target_bucket": "inference-outputs"}
+]
