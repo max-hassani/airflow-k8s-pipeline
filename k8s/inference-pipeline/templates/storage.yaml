@@ -1,0 +1,105 @@
+{{- $storage := .Values.inference.storage -}}
+{{/*
+The two hostPath-backed PersistentVolumes this chart manages, on the single
+minikube node. Postgres has a third PV as well, but that one is provisioned
+dynamically by the Airflow subchart on the default StorageClass and is not
+managed here.
+
+The *PVC* names are static rather than release-prefixed because the subcharts
+reference them by `existingClaim`, and Helm does not template values files --
+see the note at the top of values.yaml. The PV names simply follow them for
+legibility; nothing outside this file refers to a PV by name.
+
+Consequence worth knowing: PersistentVolumes are cluster-scoped, so these fixed
+names mean two releases of this chart cannot coexist in one cluster. That is an
+accepted limit for a single-cluster demo, not an oversight.
+
+Binding is pinned from both ends -- `claimRef` on each PV, `volumeName` on each
+PVC -- so a claim can only ever bind to its intended volume. Both also set
+storageClassName to `inference-local`, which deliberately matches no
+StorageClass object in the cluster: that is what keeps the default provisioner
+out. Leaving the field unset would inherit the default class (`standard`) and
+minikube would provision a fresh empty volume, silently ignoring these.
+*/}}
+# --- MinIO object store ------------------------------------------------------
+# MinIO's own data lives on a PVC, so buckets survive pod restarts and node
+# reboots. This is what makes it a real object store rather than scratch space.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: inference-minio-data
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ $storage.minio.size }}
+  accessModes:
+    - ReadWriteOnce
+  # Retain: a `helm uninstall` removes the PV object but must not silently
+  # destroy the bucket contents.
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: inference-local
+  hostPath:
+    path: {{ printf "%s/minio" $storage.hostPathRoot | quote }}
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: {{ .Release.Namespace }}
+    name: inference-minio-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inference-minio-data
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: inference-local
+  resources:
+    requests:
+      storage: {{ $storage.minio.size }}
+  volumeName: inference-minio-data
+---
+# --- Shared Airflow task logs ------------------------------------------------
+# Mounted by the Airflow components AND by every KubernetesExecutor worker pod.
+# Under the KubernetesExecutor a worker pod is deleted once its task finishes;
+# without a shared volume its logs die with it and the UI shows nothing. This
+# volume is what makes the observability story work.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: inference-airflow-logs
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ $storage.logs.size }}
+  # ReadWriteMany is honest on a single-node cluster: every Airflow component
+  # and every worker pod lands on the same kubelet and shares the same hostPath
+  # directory.
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: inference-local
+  hostPath:
+    path: {{ printf "%s/airflow-logs" $storage.hostPathRoot | quote }}
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: {{ .Release.Namespace }}
+    name: inference-airflow-logs
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inference-airflow-logs
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: inference-local
+  resources:
+    requests:
+      storage: {{ $storage.logs.size }}
+  volumeName: inference-airflow-logs
