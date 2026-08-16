@@ -1,0 +1,42 @@
+{{- if .Values.inference.networkPolicy.enabled }}
+{{/*
+Restrict who may reach MinIO to pods inside this release's namespace.
+
+Since the whole stack now installs into one namespace, a namespace boundary no
+longer separates storage from orchestration -- and a namespace never provided
+network isolation anyway, since by default any pod in the cluster can dial any
+other pod's ClusterIP. This policy is the control that actually expresses the
+intended posture.
+
+CAVEAT, stated plainly: minikube's default CNI does not implement
+NetworkPolicy, so on a stock cluster this object is accepted by the API server
+and then ignored. It is enforced on calico/cilium (`minikube start --cni=calico`
+to enforce it locally). The control that genuinely enforces per-identity bucket
+scoping in this stack is the MinIO IAM policy, not this object.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inference-minio-ingress
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ default "minio" .Values.minio.nameOverride }}
+      release: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Only workloads in this namespace: the Airflow components, the
+        # KubernetesExecutor task pods, and the KubernetesPodOperator job pods.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.minio.service.port | int }}
+        - protocol: TCP
+          port: {{ .Values.minio.consoleService.port | int }}
+{{- end }}
