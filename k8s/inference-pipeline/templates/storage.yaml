@@ -103,3 +103,50 @@ spec:
     requests:
       storage: {{ $storage.logs.size }}
   volumeName: inference-airflow-logs
+---
+# --- Pipeline scratch space --------------------------------------------------
+# Mounted by the Airflow pods AND by every KubernetesPodOperator job pod.
+#
+# A pipeline stage is its own pod, so preprocess/infer/postprocess share no
+# memory and no local disk. This volume is how bulk intermediates (parsed
+# records, the embedding array) travel between them; only small metadata goes
+# through XCom, which lives in the Airflow metadata database.
+#
+# Contents are disposable -- everything here is reproducible by re-running the
+# job, and the durable artifact is the .npy published to MinIO.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: inference-scratch
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ $storage.scratch.size }}
+  accessModes:
+    - ReadWriteMany
+  # Delete, unlike the other two: losing scratch costs a re-run, whereas losing
+  # bucket data or task logs costs evidence.
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: inference-local
+  hostPath:
+    path: {{ printf "%s/scratch" $storage.hostPathRoot | quote }}
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: {{ .Release.Namespace }}
+    name: inference-scratch
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inference-scratch
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: inference-local
+  resources:
+    requests:
+      storage: {{ $storage.scratch.size }}
+  volumeName: inference-scratch
