@@ -28,7 +28,7 @@ import os
 
 import pendulum
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
-from airflow.sdk import DAG, Variable, task_group
+from airflow.sdk import DAG, Variable, task, task_group
 from kubernetes.client import models as k8s
 
 # Injected by the inference-pipeline-config ConfigMap (see the chart's
@@ -126,17 +126,82 @@ def build_pipeline(
 ) -> DAG:
     """Build one inference pipeline DAG.
 
-    :param jobs_variable: Airflow Variable holding the job spec list. Read at
-        parse time with a `[]` default so the DAG still imports cleanly before
-        the Variable is seeded -- an unseeded environment shows an empty DAG
-        rather than a broken one.
+    :param jobs_variable: Airflow Variable holding this pipeline's job spec
+        list. Each spec references a config file, an input location and a
+        target bucket. Because specs give an `input_prefix` rather than a
+        single CSV, one spec expands to one job per file found under it.
     """
-    # `default=`, not `default_var=`. The Airflow 3 Task SDK's Variable.get has
-    # a different signature from the old airflow.models.Variable, which still
-    # exists and still takes `default_var` -- an easy way to write code that
-    # looks right and fails at parse time.
-    specs = Variable.get(jobs_variable, default=[], deserialize_json=True)
-    spec_payloads = [json.dumps(s) for s in specs]
+
+    @task
+    def discover_jobs(jobs_variable: str) -> list[str]:
+        """Expand the job specs into one concrete job per input CSV.
+
+        Deliberately a task, not top-level code. DAG files are re-parsed
+        constantly (our dag_processor refresh is 30s), so reading the Variable
+        or listing S3 at module level would run on every parse inside the
+        dag-processor -- MinIO or the API server being slow would degrade DAG
+        *parsing*, not just runs. As a task it also means a CSV added between
+        runs is picked up on the next trigger with no re-parse.
+        """
+        import boto3
+        import yaml as _yaml
+        from botocore.config import Config as _Config
+
+        specs = Variable.get(jobs_variable, default=[], deserialize_json=True)
+        if not specs:
+            raise ValueError(
+                f"Airflow Variable '{jobs_variable}' is empty or unset -- "
+                "has scripts/3-seed-data.sh been run?"
+            )
+
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=os.environ["MINIO_ENDPOINT"],
+            config=_Config(s3={"addressing_style": "path"}, signature_version="s3v4"),
+        )
+        configs_bucket = os.environ["INFERENCE_BUCKET_CONFIGS"]
+        inputs_bucket = os.environ["INFERENCE_BUCKET_INPUTS"]
+
+        jobs: list[dict] = []
+        for spec in specs:
+            for required in ("config_key", "input_prefix", "target_bucket"):
+                if required not in spec:
+                    raise ValueError(f"job spec is missing '{required}': {spec}")
+
+            # Fetched only to fail fast on a missing or malformed config: the
+            # worker reads it again itself, per the worker contract.
+            _yaml.safe_load(s3.get_object(Bucket=configs_bucket, Key=spec["config_key"])["Body"].read())
+
+            pages = s3.get_paginator("list_objects_v2").paginate(
+                Bucket=inputs_bucket, Prefix=spec["input_prefix"]
+            )
+            keys = sorted(
+                o["Key"]
+                for page in pages
+                for o in page.get("Contents", [])
+                if o["Key"].endswith(".csv")
+            )
+            if not keys:
+                raise ValueError(
+                    f"no .csv objects under s3://{inputs_bucket}/{spec['input_prefix']}"
+                )
+
+            # One job per input file. job_id comes from the filename, so a
+            # published artifact is traceable back to the object that made it.
+            jobs += [
+                {
+                    "job_id": k.rsplit("/", 1)[-1].removesuffix(".csv"),
+                    "config_key": spec["config_key"],
+                    "input_csv": k,
+                    "target_bucket": spec["target_bucket"],
+                }
+                for k in keys
+            ]
+
+        print(f"discovered {len(jobs)} job(s): {[j['job_id'] for j in jobs]}")
+        # Serialised here so each mapped task receives one already-encoded
+        # argument rather than the operator growing a flag per spec field.
+        return [json.dumps(j) for j in jobs]
 
     with DAG(
         dag_id=dag_id,
@@ -165,6 +230,6 @@ def build_pipeline(
             """preprocess -> infer -> postprocess, for a single job spec."""
             _stage("preprocess", spec_json) >> _stage("infer", spec_json) >> _stage("postprocess", spec_json)
 
-        run_job.expand(spec_json=spec_payloads)
+        run_job.expand(spec_json=discover_jobs(jobs_variable))
 
     return dag
