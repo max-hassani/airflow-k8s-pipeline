@@ -1,0 +1,31 @@
+apiVersion: v2
+name: inference-pipeline
+description: |
+  Batch inference pipeline: Apache Airflow orchestrating KubernetesPodOperator
+  jobs against MinIO object storage. Wraps the upstream Airflow and MinIO charts
+  so the whole stack installs as one release with one source of truth for
+  credentials and bucket names.
+type: application
+
+# Chart version -- bump on any change to this chart's own templates.
+version: 0.1.0
+# The Airflow version this stack is built and tested against.
+appVersion: "3.2.2"
+
+keywords:
+  - airflow
+  - mlops
+  - minio
+  - batch-inference
+# `home:` intentionally omitted until the repository has a public URL.
+
+dependencies:
+  # Pinned exactly, not with a range. A caret range here would let a reviewer's
+  # `helm dependency update` resolve a different Airflow minor than the one this
+  # chart's values were written against.
+  - name: airflow
+    version: "1.22.0"
+    repository: "https://airflow.apache.org"
+  - name: minio
+    version: "5.4.0"
+    repository: "https://charts.min.io/"
