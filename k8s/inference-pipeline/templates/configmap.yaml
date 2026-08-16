@@ -1,0 +1,31 @@
+{{/*
+Non-secret pipeline settings that DAG code needs at parse and run time.
+
+DAG files cannot read Helm values -- they are Python running in a pod long
+after templating -- so anything the DAGs need has to arrive as environment.
+Rendering it here from `.Values.inference` keeps a single source of truth:
+changing the worker image or the scratch mount path is a values edit, and no
+DAG changes.
+
+Mounted into every Airflow container via `airflow.extraEnvFrom` in values.yaml,
+alongside the credentials Secret.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inference-pipeline-config
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+data:
+  # Image the KubernetesPodOperator job pods run. Built into minikube's docker
+  # daemon by scripts/1-build-images.sh; never pushed to a registry.
+  INFERENCE_WORKER_IMAGE: {{ .Values.inference.worker.image | quote }}
+  INFERENCE_WORKER_IMAGE_PULL_POLICY: {{ .Values.inference.worker.imagePullPolicy | quote }}
+
+  # Where the shared scratch PVC is mounted, in both the Airflow pods and the
+  # job pods. The worker's --work-root defaults to this.
+  INFERENCE_SCRATCH_PATH: {{ .Values.inference.worker.scratchMountPath | quote }}
+  INFERENCE_SCRATCH_CLAIM: "inference-scratch"
+
+  # ServiceAccount the job pods run as: no bindings, no mounted token.
+  INFERENCE_WORKER_SERVICE_ACCOUNT: {{ .Values.inference.workerServiceAccount.name | quote }}
