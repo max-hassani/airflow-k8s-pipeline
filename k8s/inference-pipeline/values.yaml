@@ -95,6 +95,11 @@ inference:
     # its task finishes, so without this its logs would be unrecoverable.
     logs:
       size: 5Gi
+    # Shared pipeline scratch, ReadWriteMany. Each pipeline stage is its own
+    # pod, so this is how bulk intermediates travel from preprocess to infer to
+    # postprocess. Disposable: the durable artifact is the .npy in MinIO.
+    scratch:
+      size: 10Gi
 
   # ---------------------------------------------------------------------------
   # ServiceAccount for KubernetesPodOperator job pods. They talk to MinIO over
@@ -103,6 +108,20 @@ inference:
   workerServiceAccount:
     create: true
     name: inference-worker
+
+  # ---------------------------------------------------------------------------
+  # The mocked inference worker (worker/Dockerfile + worker/entrypoint.py).
+  #
+  # Surfaced to DAG code through the inference-pipeline-config ConfigMap, so a
+  # DAG never hardcodes an image reference. Built into minikube's docker daemon
+  # by scripts/1-build-images.sh -- no registry, nothing pushed.
+  # ---------------------------------------------------------------------------
+  worker:
+    image: inference/worker:local
+    # IfNotPresent, because `local` only ever exists on the node. Always would
+    # send the kubelet looking for it in a registry that does not have it.
+    imagePullPolicy: IfNotPresent
+    scratchMountPath: /scratch
 
   # ---------------------------------------------------------------------------
   # NetworkPolicy restricting who may reach MinIO.
@@ -187,10 +206,30 @@ airflow:
   extraEnvFrom: |
     - secretRef:
         name: inference-minio-credentials
+    - configMapRef:
+        name: inference-pipeline-config
+
+  # The shared scratch PVC, mounted into every Airflow container -- including
+  # the KubernetesExecutor task pods, which is what lets a DAG stage read what
+  # the previous stage wrote. MIRRORS inference.worker.scratchMountPath.
+  volumes:
+    - name: inference-scratch
+      persistentVolumeClaim:
+        claimName: inference-scratch
+  volumeMounts:
+    - name: inference-scratch
+      mountPath: /scratch
 
   config:
     core:
       load_examples: "False"
+      # Airflow's default DAG discovery only parses a .py file if it contains
+      # BOTH the substrings "airflow" and "dag". That heuristic dates from
+      # dags folders full of unrelated Python; here it just silently skips
+      # thin DAG files that delegate to a shared builder -- no error, no
+      # import failure, the DAG simply never appears. Our bundles contain
+      # nothing but DAG code, so the scan is pure downside.
+      dag_discovery_safe_mode: "False"
     # Surface newly added DAGs and watchers promptly; the 5 min default makes
     # the event-driven demo look broken when it is merely slow.
     dag_processor:
@@ -220,6 +259,36 @@ airflow:
     resources:
       requests: {cpu: 100m, memory: 384Mi}
       limits: {cpu: 500m, memory: 1Gi}
+
+    # Two bundles, deliberately different in kind.
+    #
+    # `dags-folder` is baked into the Airflow image and holds only the
+    # infrastructure smoke test. It must keep working when the git remote is
+    # unreachable -- it is what tells you whether the cluster itself is healthy.
+    # A LocalDagBundle reports no version (supports_versioning is False), which
+    # is fine for a diagnostic and useless for a pipeline.
+    #
+    # `inference-pipelines` is cloned from git by the dag processor and by every
+    # task pod. GitDagBundle.supports_versioning is True, so each run records
+    # the commit that defined it in `dag_run.bundle_version`, and a task pod is
+    # pinned to the exact commit its run started on -- pushing mid-run cannot
+    # change what an in-flight run executes.
+    #
+    # No credentials: the repository is public, so it is cloned anonymously over
+    # HTTPS. A private repo would need `git_conn_id` pointing at an Airflow
+    # connection holding a token. Note this must be the HTTPS URL, not the SSH
+    # remote -- the cluster has no deploy key.
+    dagBundleConfigList:
+      - name: dags-folder
+        classpath: airflow.dag_processing.bundles.local.LocalDagBundle
+        kwargs: {}
+      - name: inference-pipelines
+        classpath: airflow.providers.git.bundles.git.GitDagBundle
+        kwargs:
+          repo_url: https://github.com/max-hassani/airflow-k8s-pipeline.git
+          tracking_ref: main
+          subdir: dags/pipelines
+          refresh_interval: 30
 
   # Runs deferred tasks and asset watchers. If this is off, the event-driven
   # trigger silently never fires.

@@ -35,11 +35,17 @@ fi
 echo "==> Preparing hostPath directories with correct ownership"
 minikube ssh -p "$PROFILE" -- "
   set -eu
-  sudo mkdir -p /data/inference/minio /data/inference/airflow-logs
+  sudo mkdir -p /data/inference/minio /data/inference/airflow-logs /data/inference/scratch
   sudo chown -R 1000:1000 /data/inference/minio
   sudo chown -R 50000:0   /data/inference/airflow-logs
   sudo chmod -R 2775      /data/inference/airflow-logs
-  ls -ld /data/inference/minio /data/inference/airflow-logs
+  # Scratch is shared between the Airflow pods and the worker job pods. Both
+  # run as 50000:0 and the setgid bit keeps new files group-owned by root(0),
+  # so either side can read what the other wrote without the directory being
+  # world-writable.
+  sudo chown -R 50000:0   /data/inference/scratch
+  sudo chmod -R 2775      /data/inference/scratch
+  ls -ld /data/inference/minio /data/inference/airflow-logs /data/inference/scratch
 "
 
 echo "==> Cluster ready."

@@ -1,0 +1,11 @@
+record_id,compound,smiles
+m-0001,aspirin,CC(=O)Oc1ccccc1C(=O)O
+m-0002,caffeine,Cn1cnc2c1c(=O)n(C)c(=O)n2C
+m-0003,paracetamol,CC(=O)Nc1ccc(O)cc1
+m-0004,ibuprofen,CC(C)Cc1ccc(cc1)C(C)C(=O)O
+m-0005,penicillin-g,CC1(C)SC2C(NC(=O)Cc3ccccc3)C(=O)N2C1C(=O)O
+m-0006,nicotine,CN1CCCC1c1cccnc1
+m-0007,glucose,OCC1OC(O)C(O)C(O)C1O
+m-0008,dopamine,NCCc1ccc(O)c(O)c1
+m-0009,serotonin,NCCc1c[nH]c2ccc(O)cc12
+m-0010,morphine,CN1CCC23c4c5ccc(O)c4OC2C(O)C=CC3C1C5
