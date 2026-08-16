@@ -1,0 +1,33 @@
+# Local credential overrides -- template.
+#
+#   cp values.local.example.yaml values.local.yaml
+#   # edit the three secretKey values below
+#   scripts/20-deploy.sh          # picks values.local.yaml up automatically
+#
+# `values.local.yaml` is gitignored. This example file is committed and must
+# never contain a real value.
+#
+# The chart deliberately ships no defaults for these: `helm install` fails with
+# an explicit message until all three are set, so a clone cannot come up on
+# well-known passwords.
+#
+# Generate throwaway values for a local cluster with:
+#   openssl rand -base64 24
+#
+# In a real deployment this file does not exist at all -- the Secret comes from
+# ExternalSecrets/SOPS/Vault, and the MinIO users become short-lived STS
+# credentials rather than static keys.
+
+inference:
+  identities:
+    # MinIO superuser. Also the login for the MinIO console.
+    root:
+      secretKey: CHANGE_ME
+    # Identity every ordinary inference worker runs as: reads configs/inputs,
+    # writes outputs, denied the restricted bucket.
+    worker:
+      secretKey: CHANGE_ME
+    # Identity that may additionally read the restricted bucket, used to show
+    # the two identities see different things.
+    curator:
+      secretKey: CHANGE_ME

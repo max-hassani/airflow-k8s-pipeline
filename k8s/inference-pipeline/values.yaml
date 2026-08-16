@@ -1,0 +1,379 @@
+# =============================================================================
+# inference-pipeline
+#
+# Layout:
+#   inference:  this chart's own configuration -- the source of truth
+#   airflow:  values passed through to the upstream Airflow subchart
+#   minio:    values passed through to the upstream MinIO subchart
+#
+# A note on duplication: Helm does NOT template values files, so a subchart
+# value cannot reference `.Values.inference.*`. Anything that must reach a
+# subchart is therefore repeated in its block below. Every such repeat is
+# marked `# MIRRORS inference.*`. Secrets are never repeated -- they are read
+# once from `inference.identities` and reach MinIO through `existingSecret`
+# references. No password is committed to this repository at all: the three
+# `secretKey` values below are unset, and `helm install` fails until you supply
+# them. See the TODO on `inference.identities`.
+# =============================================================================
+
+inference:
+  # ---------------------------------------------------------------------------
+  # Buckets. Names are consumed by our Secret/ConfigMap templates; the MinIO
+  # subchart provisions them from the mirrored list under `minio.buckets`.
+  # ---------------------------------------------------------------------------
+  buckets:
+    # Job specs (job_config.yaml). This is the bucket the asset watcher polls.
+    configs: inference-configs
+    # Input record CSVs referenced by a job config.
+    inputs: inference-inputs
+    # Destination for the (n_rows, 512) .npy embeddings.
+    outputs: inference-outputs
+    # Deliberately unreachable by the worker identity, so bucket scoping can be
+    # demonstrated with a denied request rather than asserted.
+    restricted: inference-restricted
+
+  # ---------------------------------------------------------------------------
+  # Identities.
+  #
+  # TODO: set the three `secretKey` values before deploying.
+  #
+  # They are left unset on purpose. No credential ships with this repository --
+  # not even a throwaway one -- so a fresh clone cannot silently come up on
+  # well-known passwords, and nobody can copy a "demo" password into something
+  # real. `helm install` fails with an explicit message until all three are
+  # supplied; nothing is defaulted behind your back.
+  #
+  # Supply them whichever way suits you:
+  #
+  #   1. RECOMMENDED. Copy values.local.example.yaml to values.local.yaml and
+  #      fill it in. That file is gitignored, and scripts/20-deploy.sh picks it
+  #      up automatically:
+  #        cp k8s/inference-pipeline/values.local.{example.,}yaml
+  #
+  #   2. Pass them on the command line:
+  #        helm upgrade --install ... \
+  #          --set inference.identities.root.secretKey=... \
+  #          --set inference.identities.worker.secretKey=... \
+  #          --set inference.identities.curator.secretKey=...
+  #
+  #   3. Uncomment the lines below and edit them in place. Simplest, but the
+  #      values then live in a tracked file -- do not commit them.
+  #
+  # These are local-cluster credentials either way. In a real deployment this
+  # whole block is replaced by ExternalSecrets/SOPS/Vault, and the MinIO users
+  # become short-lived STS credentials rather than static keys.
+  # ---------------------------------------------------------------------------
+  identities:
+    root:
+      accessKey: minio-root
+      # secretKey: <set me>
+    # Identity used by every ordinary inference worker.
+    worker:
+      accessKey: inference-worker
+      # secretKey: <set me>
+    # Identity that may additionally read the restricted bucket. Exists only to
+    # prove the two identities see different things.
+    curator:
+      accessKey: inference-curator
+      # secretKey: <set me>
+
+  # ---------------------------------------------------------------------------
+  # Storage. hostPath-backed PersistentVolumes on the single minikube node.
+  # `/data` is the path minikube preserves across stop/start.
+  #
+  # NOTE: kubelet creates hostPath directories as root:root and does not apply
+  # the pod's fsGroup to them. scripts/00-bootstrap-minikube.sh pre-creates
+  # these with the right ownership; without it MinIO (uid 1000) and Airflow
+  # (uid 50000) both crash-loop on permission errors.
+  # ---------------------------------------------------------------------------
+  storage:
+    hostPathRoot: /data/inference
+    minio:
+      size: 20Gi
+    # Shared task-log volume, ReadWriteMany. Mounted by the Airflow components
+    # and by every KubernetesExecutor worker pod: a worker pod is deleted when
+    # its task finishes, so without this its logs would be unrecoverable.
+    logs:
+      size: 5Gi
+
+  # ---------------------------------------------------------------------------
+  # ServiceAccount for KubernetesPodOperator job pods. They talk to MinIO over
+  # S3 and have no reason to reach the Kubernetes API, so no token is mounted.
+  # ---------------------------------------------------------------------------
+  workerServiceAccount:
+    create: true
+    name: inference-worker
+
+  # ---------------------------------------------------------------------------
+  # NetworkPolicy restricting who may reach MinIO.
+  #
+  # IMPORTANT: minikube's default CNI does NOT enforce NetworkPolicy. This is
+  # shipped to express the intended production posture and is enforced on any
+  # CNI that implements it (calico, cilium). On stock minikube it is inert --
+  # see the README. The control that actually enforces bucket scoping here is
+  # the MinIO IAM policy, not this object.
+  # ---------------------------------------------------------------------------
+  networkPolicy:
+    enabled: true
+
+# =============================================================================
+# Airflow -- upstream chart 1.22.0 (Airflow 3.2.2)
+#
+# Airflow 3 splits the old webserver into `apiServer` (REST API + UI) and a
+# standalone `dagProcessor`. The `triggerer` is load-bearing rather than
+# optional: it runs the asset watcher that fires the pipeline when a new config
+# lands in MinIO.
+# =============================================================================
+airflow:
+  airflowVersion: "3.2.2"
+  defaultAirflowTag: "3.2.2"
+
+  # DAGs are baked into a custom image (worker/Dockerfile.airflow) and picked up
+  # by the default `dags-folder` LocalDagBundle. No gitSync sidecar and no DAG
+  # volume: the image is the unit of deployment, so what the scheduler parses is
+  # exactly what was built and tagged.
+  images:
+    airflow:
+      repository: inference/airflow
+      tag: local
+      pullPolicy: IfNotPresent
+    # Run migrations on the same image, so a bad build fails at migrate time
+    # rather than halfway through the first scheduling loop.
+    useDefaultImageForMigration: false
+
+  executor: "KubernetesExecutor"
+
+  # `multiNamespaceMode: false` is the important line: the chart then emits a
+  # namespaced Role/RoleBinding instead of a cluster-wide ClusterRole, so the
+  # scheduler can only create pods inside this release's namespace.
+  rbac:
+    create: true
+  allowPodLaunching: true
+  multiNamespaceMode: false
+
+  # Celery's broker and monitor are dead weight under KubernetesExecutor.
+  redis:
+    enabled: false
+  flower:
+    enabled: false
+  statsd:
+    enabled: false
+  pgbouncer:
+    enabled: false
+
+  # Chart-managed Postgres is fine for a local demo. In a real deployment this
+  # points at a managed instance via `data.metadataConnection`.
+  postgresql:
+    enabled: true
+    primary:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+
+  logs:
+    persistence:
+      enabled: true
+      # Static name: subchart values cannot be templated, so the PVC in
+      # templates/storage.yaml uses this literal name too.
+      existingClaim: inference-airflow-logs
+
+  # MinIO credentials + the `minio_s3` Airflow connection, rendered by
+  # templates/secrets.yaml from inference.identities and injected into every
+  # Airflow container.
+  extraEnvFrom: |
+    - secretRef:
+        name: inference-minio-credentials
+
+  config:
+    core:
+      load_examples: "False"
+    # Surface newly added DAGs and watchers promptly; the 5 min default makes
+    # the event-driven demo look broken when it is merely slow.
+    dag_processor:
+      refresh_interval: "30"
+
+  # Every pod gets a request and a limit. Unbounded pods are how a laptop
+  # cluster dies under load.
+  scheduler:
+    replicas: 1
+    resources:
+      requests: {cpu: 200m, memory: 512Mi}
+      limits: {cpu: "1", memory: 1Gi}
+
+  apiServer:
+    replicas: 1
+    # Reached via `kubectl port-forward` (scripts/30-port-forward.sh). NodePort
+    # would also work on minikube, but ClusterIP keeps the surface closed.
+    service:
+      type: ClusterIP
+    resources:
+      requests: {cpu: 200m, memory: 512Mi}
+      limits: {cpu: "1", memory: 1Gi}
+
+  dagProcessor:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 384Mi}
+      limits: {cpu: 500m, memory: 1Gi}
+
+  # Runs deferred tasks and asset watchers. If this is off, the event-driven
+  # trigger silently never fires.
+  triggerer:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 384Mi}
+      limits: {cpu: 500m, memory: 1Gi}
+
+  # Template for KubernetesExecutor task pods.
+  workers:
+    resources:
+      requests: {cpu: 200m, memory: 384Mi}
+      limits: {cpu: "1", memory: 1Gi}
+
+  # Reap finished executor pods so the namespace does not fill with Completed
+  # pods over a long demo.
+  cleanup:
+    enabled: true
+    schedule: "*/15 * * * *"
+
+  createUserJob:
+    useHelmHooks: false
+    applyCustomEnv: false
+
+  migrateDatabaseJob:
+    useHelmHooks: false
+    applyCustomEnv: false
+
+# =============================================================================
+# MinIO -- upstream chart 5.4.0
+#
+# Standalone (single replica): the chart's default is a 16-replica distributed
+# pool, which minikube cannot schedule.
+# =============================================================================
+minio:
+  mode: standalone
+  replicas: 1
+
+  # Root credentials come from templates/secrets.yaml, rendered from
+  # inference.identities.root. The key names rootUser/rootPassword are fixed by
+  # the chart's existingSecret contract.
+  existingSecret: inference-minio-root
+
+  persistence:
+    enabled: true
+    existingClaim: inference-minio-data
+
+  # The chart defaults to requesting 16Gi, sized for a production pool.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+  service:
+    type: ClusterIP
+    port: "9000"
+
+  consoleService:
+    type: ClusterIP
+    port: "9001"
+
+  # MIRRORS inference.buckets
+  buckets:
+    - name: inference-configs
+      policy: none
+      purge: false
+      versioning: false
+    - name: inference-inputs
+      policy: none
+      purge: false
+      versioning: false
+    - name: inference-outputs
+      policy: none
+      purge: false
+      versioning: false
+    - name: inference-restricted
+      policy: none
+      purge: false
+      versioning: false
+
+  # MIRRORS inference.buckets -- least privilege per bucket, split by verb:
+  # workers read configs and inputs, and may only write outputs.
+  policies:
+    - name: inference-worker-policy
+      statements:
+        # Read-only on job specs and input records.
+        - effect: Allow
+          resources:
+            - "arn:aws:s3:::inference-configs/*"
+            - "arn:aws:s3:::inference-inputs/*"
+          actions:
+            - "s3:GetObject"
+        # Write (and read back) on the output prefix only.
+        - effect: Allow
+          resources:
+            - "arn:aws:s3:::inference-outputs/*"
+          actions:
+            - "s3:GetObject"
+            - "s3:PutObject"
+            - "s3:AbortMultipartUpload"
+            - "s3:ListMultipartUploadParts"
+        # Listing is a bucket-level action, needed for the watcher to enumerate
+        # new config keys.
+        - effect: Allow
+          resources:
+            - "arn:aws:s3:::inference-configs"
+            - "arn:aws:s3:::inference-inputs"
+            - "arn:aws:s3:::inference-outputs"
+          actions:
+            - "s3:ListBucket"
+            - "s3:GetBucketLocation"
+        # inference-restricted appears in no statement above, so requests against
+        # it fail with AccessDenied for this identity.
+
+    - name: inference-curator-policy
+      statements:
+        - effect: Allow
+          resources:
+            - "arn:aws:s3:::inference-restricted/*"
+          actions:
+            - "s3:GetObject"
+            - "s3:PutObject"
+        - effect: Allow
+          resources:
+            - "arn:aws:s3:::inference-restricted"
+          actions:
+            - "s3:ListBucket"
+            - "s3:GetBucketLocation"
+
+  # MIRRORS inference.identities.*.accessKey -- the access key *names* only.
+  # The secret keys are never repeated here: they are read from the
+  # inference-minio-users Secret rendered by templates/secrets.yaml.
+  users:
+    - accessKey: inference-worker
+      existingSecret: inference-minio-users
+      existingSecretKey: workerSecretKey
+      policy: inference-worker-policy
+    - accessKey: inference-curator
+      existingSecret: inference-minio-users
+      existingSecretKey: curatorSecretKey
+      policy: inference-curator-policy
+
+  # Bound the provisioning hook jobs; they default to unbounded scheduling.
+  makeBucketJob:
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+  makePolicyJob:
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+  makeUserJob:
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
