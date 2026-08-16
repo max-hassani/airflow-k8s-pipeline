@@ -1,0 +1,39 @@
+# Airflow image with the DAGs baked in.
+#
+# DAG delivery is by image, not by gitSync sidecar or a shared DAG volume.
+# The tradeoff: a DAG edit costs a rebuild + rollout, but what the scheduler
+# parses is exactly what was built, tagged and (in a real setup) promoted --
+# there is no window where scheduler, dag-processor and workers disagree about
+# what the pipeline is.
+#
+# Built into the minikube docker daemon by scripts/build-images.sh, so there is
+# no registry to push to.
+FROM apache/airflow:3.2.2
+
+# Inherited from the base image, but stated explicitly: everything below runs
+# as the unprivileged `airflow` user (uid 50000), never root.
+USER airflow
+
+# The base image already ships the providers this project needs
+# (amazon -> S3Hook/boto3, cncf.kubernetes -> KubernetesPodOperator,
+# standard, common.messaging). They are pinned here as an explicit contract so
+# a base-image bump cannot silently drop one.
+# hadolint ignore=DL3013
+RUN pip install --no-cache-dir --constraint \
+      "https://raw.githubusercontent.com/apache/airflow/constraints-3.2.2/constraints-3.13.txt" \
+      "apache-airflow-providers-amazon" \
+      "apache-airflow-providers-cncf-kubernetes"
+
+# Only `dags/local/` is baked in. These are infrastructure diagnostics that must
+# work before any git bundle can be trusted -- if the git remote is unreachable
+# or a pipeline fails to parse, the smoke test still runs and tells you whether
+# the cluster itself is healthy.
+#
+# The real pipelines under `dags/pipelines/` are deliberately NOT copied: they
+# are served from a GitDagBundle, so each of their runs is stamped with the
+# commit SHA that defined it (`dag_run.bundle_version`). A LocalDagBundle
+# reports no version at all -- `LocalDagBundle.supports_versioning is False`.
+#
+# The default `dags-folder` bundle reads /opt/airflow/dags, so copying only the
+# diagnostics here keeps that bundle scoped without a path override.
+COPY --chown=airflow:root dags/local/ /opt/airflow/dags/
