@@ -89,6 +89,44 @@ def test_every_spec_resolves_to_a_real_config_and_real_inputs(path: Path):
         )
 
 
+def test_dev_requirements_match_the_worker_image_pins():
+    """requirements-dev.txt claims to pin the same versions as worker/Dockerfile.
+
+    If they drift, local tests exercise different library versions than the
+    worker actually runs against -- which is the one thing the pinning was for.
+    Nothing else checks this, and the README states it as fact.
+    """
+    pin = re.compile(r"^([A-Za-z0-9_.-]+)==([0-9][0-9A-Za-z.+-]*)$")
+
+    dockerfile = {}
+    for match in re.finditer(
+        r'"([A-Za-z0-9_.-]+==[0-9][0-9A-Za-z.+-]*)"',
+        (REPO_ROOT / "worker" / "Dockerfile").read_text(),
+    ):
+        name, version = match.group(1).split("==")
+        dockerfile[name.lower()] = version
+
+    dev = {}
+    for line in (REPO_ROOT / "requirements-dev.txt").read_text().splitlines():
+        found = pin.match(line.strip())
+        if found:
+            dev[found.group(1).lower()] = found.group(2)
+
+    assert dockerfile, "no pinned packages found in worker/Dockerfile"
+    shared = dockerfile.keys() & dev.keys()
+    assert shared, "requirements-dev.txt pins none of the worker's libraries"
+
+    mismatched = {n: (dockerfile[n], dev[n]) for n in shared if dockerfile[n] != dev[n]}
+    assert not mismatched, (
+        "version drift between worker/Dockerfile and requirements-dev.txt "
+        f"(dockerfile, requirements-dev): {mismatched}"
+    )
+    # Every library the worker needs at runtime must be installable locally, or
+    # `pytest` fails at import with a ModuleNotFoundError.
+    missing = dockerfile.keys() - dev.keys()
+    assert not missing, f"requirements-dev.txt is missing worker libraries: {sorted(missing)}"
+
+
 def test_variable_names_match_what_the_dags_ask_for():
     """`data/jobs/<name>.json` becomes Variable `<name>` (scripts/3-seed-data.sh
     uses the basename). A DAG asks for a Variable by name. Rename either side
