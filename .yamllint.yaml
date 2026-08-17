@@ -1,0 +1,33 @@
+# Helm templates are Go templates that happen to look like YAML -- `{{ ... }}`
+# at the start of a line is not parseable, so they are excluded rather than
+# fought with. `helm lint` and `helm template` cover them properly in CI.
+extends: default
+
+# `.github/` is deliberately NOT ignored: the workflow files are YAML like
+# everything else, and a broken workflow is exactly the kind of thing that should
+# be caught before it burns a CI run. The `truthy` rule below is what makes
+# `on:` acceptable there.
+ignore: |
+  k8s/inference-pipeline/templates/
+  k8s/inference-pipeline/charts/
+
+rules:
+  # Deployment manifests and values files legitimately run long, particularly
+  # policy ARNs and image references that must not be wrapped.
+  line-length:
+    max: 120
+    allow-non-breakable-words: true
+    level: warning
+  # `on:` in workflow files and `yes/no` in values are intentional.
+  truthy:
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  # Lists indented under their key is the prevailing style in this repo.
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+  # Helm values files and Kubernetes manifests conventionally omit the `---`
+  # document marker; requiring it would be churn against every chart in the
+  # ecosystem. Multi-document files still use `---` as a separator.
+  document-start: disable

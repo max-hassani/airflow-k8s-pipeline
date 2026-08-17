@@ -9,7 +9,7 @@ Wait for everything to settle:
 
 Open the UIs (both Services are ClusterIP, so nothing is exposed until you ask):
 
-  scripts/30-port-forward.sh
+  scripts/4-port-forward.sh
 
   Airflow UI     http://localhost:8080      admin / admin
   MinIO console  http://localhost:9001      {{ .Values.inference.identities.root.accessKey }} / {{ .Values.inference.identities.root.secretKey }}

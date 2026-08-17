@@ -2,7 +2,7 @@
 #
 #   cp values.local.example.yaml values.local.yaml
 #   # edit the three secretKey values below
-#   scripts/20-deploy.sh          # picks values.local.yaml up automatically
+#   scripts/2-deploy.sh          # picks values.local.yaml up automatically
 #
 # `values.local.yaml` is gitignored. This example file is committed and must
 # never contain a real value.
