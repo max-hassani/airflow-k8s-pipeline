@@ -311,7 +311,7 @@ pip install pre-commit && pre-commit install
 pre-commit run --all-files
 
 python -m pip install -r requirements-dev.txt
-pytest -q                                # 32 tests; DAG tests self-skip
+pytest -q                                # 33 tests; DAG tests self-skip
 ```
 
 `pytest` on its own is not enough: `tests/conftest.py` imports
@@ -331,7 +331,7 @@ is precisely why the gap is easy to miss locally — hence
 `tests/test_dags.py` needs Airflow, so it skips on a laptop and runs in CI
 inside the real `apache/airflow:3.2.2` image — a DAG that imports against some
 other Airflow version proves nothing about the one it will run on. The full
-suite is 42 tests with Airflow present.
+suite is 43 tests with Airflow present.
 
 The S3 fake in `conftest.py` is hand-written rather than `moto`: the worker makes
 exactly two S3 calls, so a stub keeps the tests about our logic instead of
@@ -343,10 +343,10 @@ boto3's, with no extra dependency.
 
 | Job | Runs |
 |---|---|
-| `pre-commit` | the same hooks you run locally |
+| `pre-commit` | the same hooks you run locally, including yamllint over the workflows themselves |
 | `hadolint` | both Dockerfiles |
-| `helm` | `dependency build` from Chart.lock, `lint`, `template` → parse, plus a guard that the chart **refuses to render without credentials** |
-| `tests` | pytest inside `apache/airflow:3.2.2` |
+| `helm lint + template` | `dependency build` from Chart.lock, `lint`, `template` → parse, plus a guard that the chart **refuses to render without credentials** |
+| `pytest` | the suite inside `apache/airflow:3.2.2`, launched with `docker run` from an ordinary runner |
 
 Changes under `dags/pipelines/` reach Airflow only through the git bundle, so
 they must be pushed to the tracked ref (`main`) before the cluster sees them.
