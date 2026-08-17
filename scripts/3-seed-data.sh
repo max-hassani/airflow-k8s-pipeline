@@ -54,9 +54,13 @@ JSON
 )" >/dev/null
 kubectl -n "$NAMESPACE" wait --for=condition=Ready "pod/$POD" --timeout=120s >/dev/null
 
+echo "==> Configuring the uploader"
 # Single-quoted on purpose: $rootUser and $rootPassword are expanded by the
 # shell INSIDE the container, from the injected Secret, not by this shell.
-echo "==> Configuring the uploader"
+# SC2016 ("expressions don't expand in single quotes") is precisely the intent:
+# expanding them here is the bug this avoids, because it would put the password
+# in this host's process table.
+# shellcheck disable=SC2016
 kubectl -n "$NAMESPACE" exec "$POD" -- sh -c \
   'mc alias set seed "http://'"${RELEASE}"'-minio:9000" "$rootUser" "$rootPassword" >/dev/null'
 
