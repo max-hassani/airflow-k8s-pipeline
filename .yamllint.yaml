@@ -3,10 +3,13 @@
 # fought with. `helm lint` and `helm template` cover them properly in CI.
 extends: default
 
+# `.github/` is deliberately NOT ignored: the workflow files are YAML like
+# everything else, and a broken workflow is exactly the kind of thing that should
+# be caught before it burns a CI run. The `truthy` rule below is what makes
+# `on:` acceptable there.
 ignore: |
   k8s/inference-pipeline/templates/
   k8s/inference-pipeline/charts/
-  .github/
 
 rules:
   # Deployment manifests and values files legitimately run long, particularly

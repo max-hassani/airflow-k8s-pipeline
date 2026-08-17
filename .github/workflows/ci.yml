@@ -90,7 +90,11 @@ jobs:
             --set inference.identities.root.secretKey=ci \
             --set inference.identities.worker.secretKey=ci \
             --set inference.identities.curator.secretKey=ci > /tmp/rendered.yaml
-          python -c "import sys,yaml; list(yaml.safe_load_all(open('/tmp/rendered.yaml'))); print('rendered YAML parses')"
+          python - <<'PY'
+          import yaml
+          docs = [d for d in yaml.safe_load_all(open("/tmp/rendered.yaml")) if d]
+          print(f"rendered YAML parses: {len(docs)} documents")
+          PY
 
       - name: Chart ships no default credentials
         # Guards the property the chart is designed around: rendering without
@@ -110,16 +114,38 @@ jobs:
   tests:
     name: pytest
     runs-on: ubuntu-latest
-    container:
-      image: apache/airflow:3.2.2
     steps:
       - uses: actions/checkout@v4
-      - name: Install test dependencies
-        # `python -m pip`, not bare `pip`: in this image the two resolve to
-        # different interpreters, so `pip install pytest` installs somewhere
-        # `python -m pytest` cannot see it.
-        run: python -m pip install --quiet pytest
-      - name: Run tests
-        env:
-          AIRFLOW__CORE__LOAD_EXAMPLES: "False"
-        run: python -m pytest tests/ -q -rs
+
+      # Deliberately `docker run` rather than a job-level `container:`.
+      #
+      # With `container:`, every step -- including actions/checkout -- executes
+      # inside the image. apache/airflow runs as uid 50000, while the runner's
+      # work directory (/__w) is owned by the runner user, so checkout dies with
+      # "EACCES ... /__w/_temp/_runner_file_commands/...". Adding
+      # `options: --user root` fixes the write, but then pytest also runs as
+      # root, where `python` resolves to a different interpreter than it does
+      # for the airflow user -- the same trap as `pip` vs `python -m pip` below.
+      #
+      # Running the container from a step keeps checkout on the host as the
+      # normal runner user, and mounts the repo read-only so nothing in CI can
+      # write root-owned files back into the workspace.
+      - name: Run tests inside the Airflow image
+        run: |
+          docker run --rm \
+            --volume "$PWD:/repo:ro" \
+            --workdir /repo \
+            --env HOME=/tmp \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            --env AIRFLOW__CORE__LOAD_EXAMPLES=False \
+            --entrypoint bash \
+            apache/airflow:3.2.2 -c '
+              set -euo pipefail
+              # `python -m pip`, not bare `pip`: in this image the two resolve
+              # to different interpreters, so `pip install pytest` lands
+              # somewhere `python -m pytest` cannot see it.
+              python -m pip install --quiet pytest
+              # HOME=/tmp and a read-only mount mean pytest cannot write its
+              # cache, so disable it rather than fail on it.
+              python -m pytest tests/ -q -rs -p no:cacheprovider
+            '
