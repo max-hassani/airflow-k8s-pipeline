@@ -1,0 +1,54 @@
+# Local hooks. Everything here also runs in CI (.github/workflows/ci.yml), so a
+# green commit is a green pipeline.
+#
+#   pip install pre-commit && pre-commit install
+#   pre-commit run --all-files
+#
+# Deliberately no Docker-based hooks: hadolint and the Helm checks need Docker
+# or a Helm binary, so they live in CI where both are guaranteed. Local hooks
+# stay fast enough that nobody is tempted to --no-verify.
+
+exclude: |
+  (?x)^(
+    k8s/inference-pipeline/charts/.*
+  )$
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: check-yaml
+        # Helm templates are Go templates, not YAML: a line starting `{{- if`
+        # is a parse error to any YAML reader. `helm lint` and `helm template`
+        # validate them properly in CI.
+        exclude: ^k8s/inference-pipeline/templates/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.5
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.37.1
+    hooks:
+      - id: yamllint
+        args: [--strict, -c, .yamllint.yaml]
+
+  # shellcheck-py rather than the Docker-based hook, so `pre-commit run` works
+  # without a running Docker daemon.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck

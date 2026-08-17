@@ -1,0 +1,38 @@
+# Tool configuration only. This repository is not a Python package -- the DAGs
+# are loaded by Airflow from a DAG bundle and the worker is shipped as a
+# container image, so there is nothing to build or install from here.
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"          # matches python:3.13-slim and apache/airflow:3.2.2
+extend-exclude = ["k8s/inference-pipeline/charts"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "PTH",      # prefer pathlib
+    "RUF",
+]
+ignore = [
+    # Airflow DAG files legitimately rely on module-level side effects and on
+    # `>>` chaining whose result is intentionally discarded.
+    "B018",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# DAG modules import providers that are only present inside the Airflow image,
+# and build their graph through expression statements rather than assignments.
+"dags/**" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["_inference_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Quiet, deterministic output -- CI logs are read when something has failed.
+addopts = "-q --strict-markers"
