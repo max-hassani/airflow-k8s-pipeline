@@ -24,7 +24,9 @@ from kubernetes.client import models as k8s
 # The MinIO credentials, endpoint and bucket names, injected wholesale rather
 # than named one by one, so rotating the Secret or renaming a bucket is a values
 # change and never a DAG change.
-MINIO_ENV = [k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name="inference-minio-credentials"))]
+MINIO_ENV = [
+    k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name="inference-minio-credentials"))
+]
 
 # A deliberately blunt shell probe: every line must behave as asserted, and the
 # restricted read failing is a *pass* -- an absence of AccessDenied fails the task.
