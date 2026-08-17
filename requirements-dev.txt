@@ -1,0 +1,17 @@
+# Local test dependencies.
+#
+# `pytest` alone is not enough: tests/conftest.py imports worker/entrypoint.py,
+# which imports boto3, numpy and yaml at module level. Inside the Airflow image
+# (where CI runs) those are already present, which is exactly why the gap is
+# easy to miss on a laptop.
+#
+#   python -m pip install -r requirements-dev.txt
+#   pytest -q
+#
+# Versions match worker/Dockerfile so the tests exercise the same libraries the
+# worker actually runs against.
+pytest==9.0.2
+
+boto3==1.43.0
+numpy==2.4.6
+PyYAML==6.0.3
