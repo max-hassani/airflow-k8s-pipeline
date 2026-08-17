@@ -1,5 +1,5 @@
 # Vendored Helm dependencies. Chart.lock pins the exact versions; restore the
-# archives with `helm dependency build k8s/inference-pipeline` (scripts/20-deploy.sh
+# archives with `helm dependency build k8s/inference-pipeline` (scripts/2-deploy.sh
 # does this for you).
 k8s/inference-pipeline/charts/*.tgz
 
@@ -15,6 +15,15 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.pytest_cache/
+.ruff_cache/
+
+# uv writes this whenever it sees pyproject.toml and treats the directory as a
+# project. This repo declares no dependencies -- pyproject.toml holds only ruff
+# and pytest config -- so the lock pins nothing and its inferred
+# `requires-python` can disagree with ruff's `target-version`. Test dependencies
+# are installed explicitly (see the README and the CI `tests` job).
+uv.lock
 
 # Editor / OS
 .DS_Store
