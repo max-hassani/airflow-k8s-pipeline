@@ -35,7 +35,7 @@ naming changes, this must change with it.
 
 {{/*
 In-cluster S3 endpoint for MinIO. Every consumer -- the worker containers, the
-Airflow connection, the asset watcher -- resolves the endpoint through this, so
+Airflow connection -- resolves the endpoint through this, so
 there is exactly one definition of where MinIO lives.
 */}}
 {{- define "inference.minioEndpoint" -}}

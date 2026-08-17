@@ -22,7 +22,7 @@ inference:
   # subchart provisions them from the mirrored list under `minio.buckets`.
   # ---------------------------------------------------------------------------
   buckets:
-    # Job specs (job_config.yaml). This is the bucket the asset watcher polls.
+    # Job configs referenced by a job spec's `config_key`.
     configs: inference-configs
     # Input record CSVs referenced by a job config.
     inputs: inference-inputs
@@ -46,7 +46,7 @@ inference:
   # Supply them whichever way suits you:
   #
   #   1. RECOMMENDED. Copy values.local.example.yaml to values.local.yaml and
-  #      fill it in. That file is gitignored, and scripts/20-deploy.sh picks it
+  #      fill it in. That file is gitignored, and scripts/2-deploy.sh picks it
   #      up automatically:
   #        cp k8s/inference-pipeline/values.local.{example.,}yaml
   #
@@ -82,7 +82,7 @@ inference:
   # `/data` is the path minikube preserves across stop/start.
   #
   # NOTE: kubelet creates hostPath directories as root:root and does not apply
-  # the pod's fsGroup to them. scripts/00-bootstrap-minikube.sh pre-creates
+  # the pod's fsGroup to them. scripts/0-bootstrap-minikube.sh pre-creates
   # these with the right ownership; without it MinIO (uid 1000) and Airflow
   # (uid 50000) both crash-loop on permission errors.
   # ---------------------------------------------------------------------------
@@ -245,7 +245,7 @@ airflow:
 
   apiServer:
     replicas: 1
-    # Reached via `kubectl port-forward` (scripts/30-port-forward.sh). NodePort
+    # Reached via `kubectl port-forward` (scripts/4-port-forward.sh). NodePort
     # would also work on minikube, but ClusterIP keeps the surface closed.
     service:
       type: ClusterIP
@@ -405,8 +405,8 @@ minio:
           actions:
             - "s3:ListBucket"
             - "s3:GetBucketLocation"
-        # inference-restricted appears in no statement above, so requests against
-        # it fail with AccessDenied for this identity.
+            # inference-restricted appears in no statement above, so requests
+            # against it fail with AccessDenied for this identity.
 
     - name: inference-curator-policy
       statements:
