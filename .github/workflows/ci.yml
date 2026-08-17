@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - feat/further-enhancements
+  pull_request:
+  workflow_dispatch:
+
+# A second push to a PR makes the first run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Everything a developer can run locally with `pre-commit run --all-files`:
+  # formatting, Python lint, YAML lint, shell lint.
+  lint:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: pre-commit/action@v3.0.1
+
+  # Docker-only lint, kept out of the local hooks so `pre-commit run` does not
+  # require a Docker daemon.
+  dockerfiles:
+    name: hadolint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile: [worker/Dockerfile, worker/Dockerfile.airflow]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
+          # DL3008 (pin apt versions) does not apply: neither image installs
+          # apt packages. Failure threshold is warning so style nits do not
+          # block a merge while real problems still do.
+          failure-threshold: warning
+
+  # The chart is the deployment contract, so it gets checked the way it is
+  # actually used: dependencies resolved from Chart.lock, then rendered.
+  helm:
+    name: helm lint + template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Add chart repositories
+        # `helm dependency build` refuses to run unless every repository named
+        # in Chart.yaml is registered locally -- it fails with "no repository
+        # definition for ...". Same reason scripts/2-deploy.sh adds them.
+        run: |
+          helm repo add apache-airflow https://airflow.apache.org
+          helm repo add minio https://charts.min.io/
+
+      - name: Vendor dependencies from Chart.lock
+        # `build`, not `update`: build installs exactly what Chart.lock pins,
+        # whereas update would re-resolve against the live index and rewrite
+        # the lockfile. CI must verify the committed lock, not replace it.
+        run: helm dependency build k8s/inference-pipeline
+
+      - name: helm lint
+        # The chart intentionally ships no default passwords, so `required`
+        # aborts the render until they are supplied. CI passes throwaway values
+        # to exercise the templates -- this is not a credential.
+        run: |
+          helm lint k8s/inference-pipeline \
+            --set inference.identities.root.secretKey=ci \
+            --set inference.identities.worker.secretKey=ci \
+            --set inference.identities.curator.secretKey=ci
+
+      - name: helm template renders valid manifests
+        run: |
+          helm template inference k8s/inference-pipeline \
+            --namespace inference \
+            --set inference.identities.root.secretKey=ci \
+            --set inference.identities.worker.secretKey=ci \
+            --set inference.identities.curator.secretKey=ci > /tmp/rendered.yaml
+          python -c "import sys,yaml; list(yaml.safe_load_all(open('/tmp/rendered.yaml'))); print('rendered YAML parses')"
+
+      - name: Chart ships no default credentials
+        # Guards the property the chart is designed around: rendering without
+        # explicit secretKeys must fail rather than silently produce an empty
+        # password, which would bring MinIO up unauthenticated.
+        run: |
+          if helm template inference k8s/inference-pipeline >/dev/null 2>&1; then
+            echo "::error::chart rendered without credentials; the 'required' guards have regressed"
+            exit 1
+          fi
+          echo "confirmed: chart refuses to render without explicit credentials"
+
+  # The suite runs inside the real Airflow image, not against a pip-installed
+  # Airflow: a DAG that imports under some other version proves nothing about
+  # the one it will actually run on. tests/test_dags.py self-skips when Airflow
+  # is absent, so the same command works on a laptop -- it just covers less.
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    container:
+      image: apache/airflow:3.2.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        # `python -m pip`, not bare `pip`: in this image the two resolve to
+        # different interpreters, so `pip install pytest` installs somewhere
+        # `python -m pytest` cannot see it.
+        run: python -m pip install --quiet pytest
+      - name: Run tests
+        env:
+          AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+        run: python -m pytest tests/ -q -rs

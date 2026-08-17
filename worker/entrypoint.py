@@ -85,14 +85,14 @@ def get_object(s3, bucket: str, key: str) -> bytes:
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
         if code in ("NoSuchKey", "404"):
-            raise SystemExit(f"object not found: s3://{bucket}/{key}")
+            raise SystemExit(f"object not found: s3://{bucket}/{key}") from exc
         if code in ("AccessDenied", "403"):
             raise SystemExit(
                 f"access denied reading s3://{bucket}/{key} as "
                 f"'{os.environ.get('AWS_ACCESS_KEY_ID', '?')}'. "
                 "This identity is scoped by MinIO IAM policy; check that the "
                 "bucket is one it is allowed to read."
-            )
+            ) from exc
         raise
 
 
@@ -179,7 +179,9 @@ def stage_infer(args, s3, spec: dict) -> None:
 
     embeddings = np.vstack(batches)
     if embeddings.shape != (n_rows, EMBEDDING_DIM):
-        raise SystemExit(f"internal error: produced {embeddings.shape}, expected {(n_rows, EMBEDDING_DIM)}")
+        raise SystemExit(
+            f"internal error: produced {embeddings.shape}, expected {(n_rows, EMBEDDING_DIM)}"
+        )
 
     out = d / "embeddings.npy"
     np.save(out, embeddings)
@@ -258,7 +260,7 @@ def main() -> int:
     try:
         spec = json.loads(args.spec_json)
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"--spec-json is not valid JSON: {exc}")
+        raise SystemExit(f"--spec-json is not valid JSON: {exc}") from exc
 
     for key in ("job_id", "config_key", "input_csv", "target_bucket"):
         if key not in spec:
