@@ -25,10 +25,19 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import timedelta
 
 import pendulum
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
-from airflow.sdk import DAG, Variable, task, task_group
+from airflow.sdk import (
+    DAG,
+    DeadlineAlert,
+    DeadlineReference,
+    SyncCallback,
+    Variable,
+    task,
+    task_group,
+)
 from kubernetes.client import models as k8s
 
 # Injected by the inference-pipeline-config ConfigMap (see the chart's
@@ -76,6 +85,27 @@ _STAGE_RESOURCES = {
 }
 
 
+def deadline_missed(**context) -> None:
+    """Fired when a DAG run overruns its deadline.
+
+    Must stay a module-level function: Airflow serialises the callback by import
+    path and resolves it on the executor, so a nested or lambda callback cannot
+    be reconstructed there.
+
+    Prints rather than paging anyone, because this is a local demo. In a real
+    deployment this is where a notifier goes -- the shape of the hook is the
+    same either way.
+    """
+    dag_run = context.get("dag_run")
+    dag_id = getattr(dag_run, "dag_id", "<unknown>")
+    run_id = getattr(dag_run, "run_id", "<unknown>")
+    print(
+        f"DEADLINE MISSED: dag_id={dag_id} run_id={run_id} "
+        "exceeded its allotted wall-clock time. Check for pods stuck Pending "
+        "(node pressure) or a stage retrying against an unreachable MinIO."
+    )
+
+
 def _stage(stage: str, spec_json) -> KubernetesPodOperator:
     """One pipeline stage as a pod.
 
@@ -93,11 +123,16 @@ def _stage(stage: str, spec_json) -> KubernetesPodOperator:
         image=WORKER_IMAGE,
         image_pull_policy=WORKER_PULL_POLICY,
         arguments=[
-            "--stage", stage,
-            "--spec-json", spec_json,
-            "--work-root", SCRATCH_PATH,
-            "--dag-id", "{{ dag.dag_id }}",
-            "--run-id", "{{ run_id }}",
+            "--stage",
+            stage,
+            "--spec-json",
+            spec_json,
+            "--work-root",
+            SCRATCH_PATH,
+            "--dag-id",
+            "{{ dag.dag_id }}",
+            "--run-id",
+            "{{ run_id }}",
         ],
         env_from=_MINIO_ENV,
         volumes=[_SCRATCH_VOLUME],
@@ -123,6 +158,7 @@ def build_pipeline(
     model_family: str,
     description: str,
     schedule=None,
+    deadline_minutes: int = 15,
 ) -> DAG:
     """Build one inference pipeline DAG.
 
@@ -170,7 +206,9 @@ def build_pipeline(
 
             # Fetched only to fail fast on a missing or malformed config: the
             # worker reads it again itself, per the worker contract.
-            _yaml.safe_load(s3.get_object(Bucket=configs_bucket, Key=spec["config_key"])["Body"].read())
+            _yaml.safe_load(
+                s3.get_object(Bucket=configs_bucket, Key=spec["config_key"])["Body"].read()
+            )
 
             pages = s3.get_paginator("list_objects_v2").paginate(
                 Bucket=inputs_bucket, Prefix=spec["input_prefix"]
@@ -210,16 +248,43 @@ def build_pipeline(
         start_date=pendulum.datetime(2026, 1, 1, tz="UTC"),
         catchup=False,
         tags=["inference", model_family],
+        # --- Retry policy, DAG-level ---------------------------------------
+        # In default_args rather than per-operator, so it covers every task in
+        # the DAG -- including `discover_jobs`, which talks to the API server
+        # and to MinIO and is exactly as able to hit a transient failure as the
+        # pod stages are.
         default_args={
             # Pod scheduling and image pulls are the flaky part of this
-            # pipeline, not the logic; two retries with a short backoff clears
-            # transient node pressure without masking a real failure.
+            # pipeline, not the logic. Two retries clears transient node
+            # pressure without masking a real failure.
             "retries": 2,
             "retry_delay": pendulum.duration(seconds=30),
+            # Back off between attempts: an immediate retry against a MinIO
+            # that is still starting up just burns an attempt for nothing.
+            "retry_exponential_backoff": True,
+            "max_retry_delay": pendulum.duration(minutes=5),
             # A stage that has not finished in 10 minutes is wedged, not slow:
             # the mocked worker's real work is milliseconds.
             "execution_timeout": pendulum.duration(minutes=10),
         },
+        # --- Deadline alert, the Airflow 3 replacement for SLAs -------------
+        # `sla=` still EXISTS as an operator parameter in 3.2.2, but the value
+        # is discarded and only a UserWarning is emitted:
+        #   "The SLA feature is removed in Airflow 3.0, replaced with Deadline
+        #    Alerts in >=3.1"
+        # So a ported Airflow 2 SLA looks configured and silently does nothing.
+        # This is the real thing: measured from when the run was queued, so
+        # time spent waiting for a free pod slot counts against it -- which is
+        # what you actually care about when the cluster is under load.
+        deadline=DeadlineAlert(
+            reference=DeadlineReference.DAGRUN_QUEUED_AT,
+            interval=timedelta(minutes=deadline_minutes),
+            # Sync, not Async: AsyncCallback runs on the triggerer, and these
+            # DAGs are served from a git bundle that the executor is known to
+            # fetch. SyncCallback runs in the executor, where the module is
+            # importable.
+            callback=SyncCallback(deadline_missed),
+        ),
         # Keep one run per DAG at a time so concurrent runs cannot interleave
         # on the shared scratch volume.
         max_active_runs=1,
@@ -228,7 +293,11 @@ def build_pipeline(
         @task_group
         def run_job(spec_json):
             """preprocess -> infer -> postprocess, for a single job spec."""
-            _stage("preprocess", spec_json) >> _stage("infer", spec_json) >> _stage("postprocess", spec_json)
+            (
+                _stage("preprocess", spec_json)
+                >> _stage("infer", spec_json)
+                >> _stage("postprocess", spec_json)
+            )
 
         run_job.expand(spec_json=discover_jobs(jobs_variable))
 
